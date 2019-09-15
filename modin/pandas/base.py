@@ -95,6 +95,21 @@ class BasePandasDataset(object):
             sib._query_compiler = new_query_compiler
         old_query_compiler.free()
 
+    def _handle_level_agg(self, axis, level, op):
+        """Helper method to perform error checking for aggregation functions with a level parameter.
+        Args:
+            axis: The axis to apply the operation on
+            level: The level of the axis to apply the operation on
+            op: String representation of the operation to be performed on the level
+        """
+        if not isinstance(self.axes[axis], pandas.MultiIndex):
+            # error thrown by pandas
+            raise TypeError("Can only count levels on hierarchical columns.")
+
+        if isinstance(level, str):
+            level = self.axes[axis].names.index(level)
+        return getattr(self.groupby(level=level, axis=axis), op)()
+
     def _validate_other(
         self,
         other,
@@ -689,13 +704,15 @@ class BasePandasDataset(object):
 
         if level is not None:
 
-            if not isinstance(self.axes[axis], pandas.MultiIndex):
-                # error thrown by pandas
-                raise TypeError("Can only count levels on hierarchical columns.")
+            return self._handle_level_agg(axis, level, "count")
 
-            if isinstance(level, str):
-                level = self.axes[axis].names.index(level)
-            return self.groupby(level=level, axis=axis).count()
+            # if not isinstance(self.axes[axis], pandas.MultiIndex):
+            #     # error thrown by pandas
+            #     raise TypeError("Can only count levels on hierarchical columns.")
+
+            # if isinstance(level, str):
+            #     level = self.axes[axis].names.index(level)
+            # return self.groupby(level=level, axis=axis).count()
 
         return self._reduce_dimension(
             self._query_compiler.count(
@@ -1628,6 +1645,10 @@ class BasePandasDataset(object):
         """
         axis = self._get_axis_number(axis) if axis is not None else 0
         data = self._validate_dtypes_min_max(axis, numeric_only)
+
+        if level is not None:
+            return data._handle_level_agg(axis, level, "min")
+
         return data._reduce_dimension(
             data._query_compiler.min(
                 axis=axis,
