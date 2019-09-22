@@ -95,20 +95,21 @@ class BasePandasDataset(object):
             sib._query_compiler = new_query_compiler
         old_query_compiler.free()
 
-    def _handle_level_agg(self, axis, level, op):
+    def _handle_level_agg(self, axis, level, op, **kwargs):
         """Helper method to perform error checking for aggregation functions with a level parameter.
         Args:
             axis: The axis to apply the operation on
             level: The level of the axis to apply the operation on
             op: String representation of the operation to be performed on the level
         """
-        if not isinstance(self.axes[axis], pandas.MultiIndex):
+        if op == "count" and not isinstance(self.axes[axis], pandas.MultiIndex):
             # error thrown by pandas
             raise TypeError("Can only count levels on hierarchical columns.")
 
         if isinstance(level, str):
             level = self.axes[axis].names.index(level)
-        return getattr(self.groupby(level=level, axis=axis), op)()
+
+        return getattr(self.groupby(level=level, axis=axis), op)(**kwargs)
 
     def _validate_other(
         self,
@@ -424,6 +425,16 @@ class BasePandasDataset(object):
                 return data_for_compute.all(
                     axis=axis, bool_only=False, skipna=skipna, level=level, **kwargs
                 )
+
+            if level is not None:
+                if bool_only is not None:
+                    raise NotImplementedError(
+                        "Option bool_only is not implemented with option level."
+                    )
+
+                kwargs['skipna']=skipna
+                return self._handle_level_agg(axis, level, "all", **kwargs)
+
             return self._reduce_dimension(
                 self._query_compiler.all(
                     axis=axis, bool_only=bool_only, skipna=skipna, level=level, **kwargs
@@ -433,11 +444,20 @@ class BasePandasDataset(object):
             if bool_only:
                 raise ValueError("Axis must be 0 or 1 (got {})".format(axis))
             # Reduce to a scalar if axis is None.
-            result = self._reduce_dimension(
-                self._query_compiler.all(
-                    axis=0, bool_only=bool_only, skipna=skipna, level=level, **kwargs
+
+            if level is not None:
+                kwargs['skipna']=skipna
+                return self._handle_level_agg(axis, level, "all", **kwargs)
+            else:
+                result = self._reduce_dimension(
+                    self._query_compiler.all(
+                        axis=0,
+                        bool_only=bool_only,
+                        skipna=skipna,
+                        level=level,
+                        **kwargs
+                    )
                 )
-            )
             if isinstance(result, BasePandasDataset):
                 return result.all(
                     axis=axis, bool_only=bool_only, skipna=skipna, level=level, **kwargs
@@ -461,9 +481,19 @@ class BasePandasDataset(object):
                         )
                     )
                 data_for_compute = self[self.columns[self.dtypes == np.bool]]
-                return data_for_compute.all(
-                    axis=axis, bool_only=None, skipna=skipna, level=level, **kwargs
+                return data_for_compute.any(
+                    axis=axis, bool_only=False, skipna=skipna, level=level, **kwargs
                 )
+
+            if level is not None:
+                if bool_only is not None:
+                    raise NotImplementedError(
+                        "Option bool_only is not implemented with option level."
+                    )
+
+                kwargs['skipna']=skipna
+                return self._handle_level_agg(axis, level, "any", **kwargs)
+
             return self._reduce_dimension(
                 self._query_compiler.any(
                     axis=axis, bool_only=bool_only, skipna=skipna, level=level, **kwargs
@@ -473,11 +503,20 @@ class BasePandasDataset(object):
             if bool_only:
                 raise ValueError("Axis must be 0 or 1 (got {})".format(axis))
             # Reduce to a scalar if axis is None.
-            result = self._reduce_dimension(
-                self._query_compiler.any(
-                    axis=0, bool_only=bool_only, skipna=skipna, level=level, **kwargs
+
+            if level is not None:
+                kwargs['skipna']=skipna
+                return self._handle_level_agg(axis, level, "any", **kwargs)
+            else:
+                result = self._reduce_dimension(
+                    self._query_compiler.any(
+                        axis=0,
+                        bool_only=bool_only,
+                        skipna=skipna,
+                        level=level,
+                        **kwargs
+                    )
                 )
-            )
             if isinstance(result, BasePandasDataset):
                 return result.any(
                     axis=axis, bool_only=bool_only, skipna=skipna, level=level, **kwargs
@@ -703,16 +742,7 @@ class BasePandasDataset(object):
         axis = self._get_axis_number(axis) if axis is not None else 0
 
         if level is not None:
-
             return self._handle_level_agg(axis, level, "count")
-
-            # if not isinstance(self.axes[axis], pandas.MultiIndex):
-            #     # error thrown by pandas
-            #     raise TypeError("Can only count levels on hierarchical columns.")
-
-            # if isinstance(level, str):
-            #     level = self.axes[axis].names.index(level)
-            # return self.groupby(level=level, axis=axis).count()
 
         return self._reduce_dimension(
             self._query_compiler.count(
@@ -1558,6 +1588,28 @@ class BasePandasDataset(object):
         """
         axis = self._get_axis_number(axis) if axis is not None else 0
         data = self._validate_dtypes_min_max(axis, numeric_only)
+
+        #Check if the data is a series    
+        if axis is not None:
+            axis = self._get_axis_number(axis)
+            if numeric_only and axis == 0:
+                if hasattr(self, "dtype"):
+                    raise NotImplementedError(
+                        "{}.{} does not implement numeric_only.".format(
+                            self.__name__, "max"
+                        )
+                    )
+                data_for_compute = self.select_dtypes(include=[np.number])
+                return data_for_compute.max(
+                    axis=axis, numeric_only=False, skipna=skipna, level=level, **kwargs
+                )
+
+        if level is not None:
+            kwargs={}
+            kwargs['skipna']=skipna
+            kwargs['numeric_only']=numeric_only
+            return data._handle_level_agg(axis, level, "max", **kwargs)
+
         return data._reduce_dimension(
             data._query_compiler.max(
                 axis=axis,
@@ -1582,6 +1634,26 @@ class BasePandasDataset(object):
         data = self._validate_dtypes_sum_prod_mean(
             axis, numeric_only, ignore_axis=False
         )
+
+        #Check if the data is a series    
+        if axis is not None:
+            axis = self._get_axis_number(axis)
+            if numeric_only and axis == 0:
+                if hasattr(self, "dtype"):
+                    raise NotImplementedError(
+                        "{}.{} does not implement numeric_only.".format(
+                            self.__name__, "mean"
+                        )
+                    )
+                data_for_compute = self.select_dtypes(include=[np.number])
+                return data_for_compute.mean(
+                    axis=axis, numeric_only=False, skipna=skipna, level=level, **kwargs
+                )
+
+        if level is not None:
+            kwargs['skipna']=skipna
+            return data._handle_level_agg(axis, level, "mean", **kwargs)
+
         return data._reduce_dimension(
             data._query_compiler.mean(
                 axis=axis,
@@ -1605,6 +1677,29 @@ class BasePandasDataset(object):
         axis = self._get_axis_number(axis) if axis is not None else 0
         if numeric_only is not None and not numeric_only:
             self._validate_dtypes(numeric_only=True)
+
+        #Check if the data is a series    
+        print('here')
+        if axis is not None:
+            axis = self._get_axis_number(axis)
+            if numeric_only and axis == 0:
+                print('series')
+                if hasattr(self, "dtype"):
+                    raise NotImplementedError(
+                        "{}.{} does not implement numeric_only.".format(
+                            self.__name__, "median"
+                        )
+                    )
+                data_for_compute = self.select_dtypes(include=[np.number])
+                return data_for_compute.median(
+                    axis=axis, numeric_only=False, skipna=skipna, level=level, **kwargs
+                )
+
+        if level is not None:
+            kwargs['skipna']=skipna
+            kwargs['numeric_only']=numeric_only
+            return self._handle_level_agg(axis, level, "median", **kwargs)
+
         return self._reduce_dimension(
             self._query_compiler.median(
                 axis=axis,
@@ -1646,8 +1741,26 @@ class BasePandasDataset(object):
         axis = self._get_axis_number(axis) if axis is not None else 0
         data = self._validate_dtypes_min_max(axis, numeric_only)
 
+
+        #Check if the data is a series    
+        if axis is not None:
+            axis = self._get_axis_number(axis)
+            if numeric_only and axis == 0:
+                if hasattr(self, "dtype"):
+                    raise NotImplementedError(
+                        "{}.{} does not implement numeric_only.".format(
+                            self.__name__, "min"
+                        )
+                    )
+                data_for_compute = self.select_dtypes(include=[np.number])
+                return data_for_compute.min(
+                    axis=axis, numeric_only=False, skipna=skipna, level=level, **kwargs
+                )
+
         if level is not None:
-            return data._handle_level_agg(axis, level, "min")
+            kwargs["skipna"]=skipna
+            kwargs["numeric_only"]=numeric_only
+            return data._handle_level_agg(axis, level, "min", **kwargs)
 
         return data._reduce_dimension(
             data._query_compiler.min(
@@ -1826,6 +1939,33 @@ class BasePandasDataset(object):
         """
         axis = self._get_axis_number(axis) if axis is not None else 0
         data = self._validate_dtypes_sum_prod_mean(axis, numeric_only, ignore_axis=True)
+
+        #Check if the data is a series    
+        if axis is not None:
+            axis = self._get_axis_number(axis)
+            if numeric_only and axis == 0:
+                if hasattr(self, "dtype"):
+                    raise NotImplementedError(
+                        "{}.{} does not implement numeric_only.".format(
+                            self.__name__, "prod"
+                        )
+                    )
+                data_for_compute = self.select_dtypes(include=[np.number])
+                return data_for_compute.prod(
+                    axis=axis, numeric_only=False, skipna=skipna, level=level, min_count=min_count, **kwargs
+                )
+
+        if level is not None:
+            kwargs2={'skipna':skipna}
+            # kwargs["skipna"]=skipna
+            # kwargs["min_count"]=min_count
+            # kwargs['numeric_only']=numeric_only
+            if isinstance(level, str):
+                level = self.axes[axis].names.index(level)
+
+            return getattr(self.groupby(level=level, axis=axis), "prod")(skipna=skipna,min_count=min_count)
+            # return data._handle_level_agg(axis, level, "prod", skipna=skipna,min_count=min_count)
+
         return data._reduce_dimension(
             data._query_compiler.prod(
                 axis=axis,
@@ -2530,6 +2670,11 @@ class BasePandasDataset(object):
         axis = self._get_axis_number(axis) if axis is not None else 0
         if numeric_only is not None and not numeric_only:
             self._validate_dtypes(numeric_only=True)
+
+        if level is not None:
+            kwargs["skipna"]=skipna
+            return data._handle_level_agg(axis, level, "min", **kwargs)
+
         return self._reduce_dimension(
             self._query_compiler.skew(
                 axis=axis,
@@ -2675,6 +2820,28 @@ class BasePandasDataset(object):
         axis = self._get_axis_number(axis) if axis is not None else 0
         if numeric_only is not None and not numeric_only:
             self._validate_dtypes(numeric_only=True)
+
+
+        #Check if the data is a series    
+        if axis is not None:
+            axis = self._get_axis_number(axis)
+            if numeric_only and axis == 0:
+                if hasattr(self, "dtype"):
+                    raise NotImplementedError(
+                        "{}.{} does not implement numeric_only.".format(
+                            self.__name__, "std"
+                        )
+                    )
+                data_for_compute = self.select_dtypes(include=[np.number])
+                return data_for_compute.std(
+                    axis=axis, numeric_only=False, skipna=skipna, level=level, ddof=ddof, **kwargs
+                )
+
+        if level is not None:
+            kwargs['skipna']=skipna
+            kwargs['ddof']=ddof
+            return self._handle_level_agg(axis, level, "std", **kwargs)
+
         return self._reduce_dimension(
             self._query_compiler.std(
                 axis=axis,
@@ -2726,6 +2893,10 @@ class BasePandasDataset(object):
         data = self._validate_dtypes_sum_prod_mean(
             axis, numeric_only, ignore_axis=False
         )
+
+        if level is not None:
+            data._handle_level_agg(axis, level, "sum")
+
         return data._reduce_dimension(
             data._query_compiler.sum(
                 axis=axis,
@@ -3128,6 +3299,12 @@ class BasePandasDataset(object):
         axis = self._get_axis_number(axis) if axis is not None else 0
         if numeric_only is not None and not numeric_only:
             self._validate_dtypes(numeric_only=True)
+
+        if level is not None:
+            kwargs["skipna"]=skipna
+            kwargs["ddof"]=ddof
+            return data._handle_level_agg(axis, level, "var", **kwargs)
+
         return self._reduce_dimension(
             self._query_compiler.var(
                 axis=axis,

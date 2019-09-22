@@ -478,6 +478,7 @@ class DataFrameGroupBy(object):
         Returns:
              A new Modin DataFrame with the result of the pandas function.
         """
+
         if isinstance(self._by, type(self._query_compiler)):
             by = self._by.to_pandas().squeeze()
         else:
